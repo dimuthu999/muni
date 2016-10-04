@@ -77,10 +77,10 @@ run_query(paste("select * from MSRB.MSRB where CUSIP in (",cusips,")",sep = ""))
 fetch_last_query("city_muni_data")
 saveRDS(city_muni_data,file = "city_muni_data.rds")
 
+
 # ZIP CODE DATA -----------------------------------------------------------
 rm(list=ls())
 setwd("E:/Muni")
-require(gdata)
 require(dplyr)
 require(plyr)
 require(zoo)
