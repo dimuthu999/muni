@@ -1,0 +1,79 @@
+---
+title: "municipal city ~ foreclosure"
+date: "October 3, 2016"
+output: 
+  html_document: 
+    css: bodycss.css
+---
+
+### Data Preparation
+* First list of all issues were identified from MSRB (wrds) table. 326,000 issues after removing tranches which have the same security description and the dated date.
+* Detailed description of each of the 326,000 issues were manually obtained from emma.org using the cusip of each issue.
+* The description of each issue was used to filter out issues such as school districts, public parks etc.
+* issue level information for the remaining issues were obtained from bloomberg. Same information were applied to the securities excluded in the original 326,000 using the security description and the dated date.
+* Foreclosure percentage and default percentages were calculated for each zipcode-month using the freddie mac's loanmonth dataset
+* Trade data for issues where bloomberg's INDUSTRY_SUBGROUP=="Municipal-City" were downloaded from wrds. default data, foreclosure data and issue level data were matched with the trade data to create the dataset.
+
+```{r warning=FALSE,message=FALSE}
+rm(list=ls())
+library(plyr)
+library(dplyr)
+library(stargazer)
+setwd("E:/Muni")
+muni_city <- readRDS("city_muni_data_merged.rds")
+muni_city['yield_minus_tbill'] <- muni_city$YIELD-muni_city$tbill_3month
+muni_city['purpose'] <- ifelse(muni_city$MUNI_PURPOSE %in% c("REFUNDING BONDS","REFUNDING NOTES"),"refunding",
+                               ifelse(muni_city$MUNI_PURPOSE %in% c("PUBLIC IMPS."),"public improvment","other"))
+muni_city['issue_type'] <- ifelse(muni_city$MUNI_ISSUE_TYP %in% c("GENERAL OBLIGATION LTD")
+                                  ,"general obligation limited",
+                               ifelse(muni_city$MUNI_ISSUE_TYP %in% c("GENERAL OBLIGATION UNLTD"),
+                                      "general obligation unlimited","other"))
+muni_city['offering_type'] <- ifelse(muni_city$MUNI_OFFERING_TYP %in% c("COMPETITIVE"),"competitive",
+                               ifelse(muni_city$MUNI_OFFERING_TYP %in% c("NEGOTIATED"), "negotiated","other"))
+muni_city$MUNI_ISSUE_SIZE <- as.numeric(muni_city$MUNI_ISSUE_SIZE)
+
+issues <- muni_city[!duplicated(muni_city[,c("CUSIP.x")]),]
+glimpse(issues)
+
+```
+
+### Descriptive Stats
+```{r warning=FALSE}
+#Number of issues
+length(unique(muni_city$CUSIP.x))
+#Number of trades
+nrow(muni_city)
+#Summary Price, yield, yield minus tibill rate
+stargazer(
+  muni_city[, c("DOLLAR_PRICE","YIELD","yield_minus_tbill","forc_pct","default_pct")], type = "text", 
+  summary.stat = c("mean", "sd","min", "p25", "median", "p75", "max")
+)
+
+#Insurance
+table(issues$INSURANCE_STATUS)
+#Callable
+table(issues$CALLABLE)
+#Credit Enhancements
+table(issues$MUNI_STATE_TAX)
+#Purpose
+table(issues$purpose)
+#Issue Type
+table(issues$issue_type)
+#Offering Type
+table(issues$offering_type)
+#Issue Size
+summary(issues$MUNI_ISSUE_SIZE)
+```
+
+### Basic Regressions
+```{r results='asis'}
+ols <- list()
+ols[[1]]<-lm(yield_minus_tbill~forc_pct+factor(purpose)+factor(issue_type)+factor(offering_type)+log(MUNI_ISSUE_SIZE)
+             +factor(INSURANCE_STATUS)+factor(CALLABLE)+factor(STATE_CODE),data = muni_city)
+ols[[2]]<-lm(yield_minus_tbill~default_pct+factor(purpose)+factor(issue_type)+factor(offering_type)+
+               log(MUNI_ISSUE_SIZE)+factor(INSURANCE_STATUS)+factor(CALLABLE)+factor(STATE_CODE),data = muni_city)
+stargazer(ols,column.labels=c('Foreclosure','Default'), omit = c("STATE_CODE"),omit.labels = c("State"),
+          type = "html",no.space=TRUE)
+
+```
+
