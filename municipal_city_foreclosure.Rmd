@@ -7,6 +7,7 @@ output:
 ---
 
 ### Data Preparation
+* Code used to generate the dataset is available at https://github.com/dimuthu999/muni/blob/master/data%20merge.R
 * First list of all issues were identified from MSRB (wrds) table. 326,000 issues after removing tranches which have the same security description and the dated date.
 * Detailed description of each of the 326,000 issues were manually obtained from emma.org using the cusip of each issue.
 * The description of each issue was used to filter out issues such as school districts, public parks etc.
@@ -31,9 +32,10 @@ muni_city['issue_type'] <- ifelse(muni_city$MUNI_ISSUE_TYP %in% c("GENERAL OBLIG
 muni_city['offering_type'] <- ifelse(muni_city$MUNI_OFFERING_TYP %in% c("COMPETITIVE"),"competitive",
                                ifelse(muni_city$MUNI_OFFERING_TYP %in% c("NEGOTIATED"), "negotiated","other"))
 muni_city$MUNI_ISSUE_SIZE <- as.numeric(muni_city$MUNI_ISSUE_SIZE)
+muni_city['TRADE_YEAR']<-substr(muni_city$TRADE_DATE,1,4)
 
 issues <- muni_city[!duplicated(muni_city[,c("CUSIP.x")]),]
-glimpse(issues)
+glimpse(muni_city)
 
 ```
 
@@ -66,13 +68,17 @@ summary(issues$MUNI_ISSUE_SIZE)
 ```
 
 ### Basic Regressions
+Marginal Effects: 
+* 1 standard deviation increase in foreclosure rate (by 0.001), increases the yeild premium by 11.5% at mean
+* 1 standard deviation increase in default rate (by 0.01),increases the yeild premium by 6.5% at mean
+
 ```{r results='asis'}
 ols <- list()
 ols[[1]]<-lm(yield_minus_tbill~forc_pct+factor(purpose)+factor(issue_type)+factor(offering_type)+log(MUNI_ISSUE_SIZE)
-             +factor(INSURANCE_STATUS)+factor(CALLABLE)+factor(STATE_CODE),data = muni_city)
+             +factor(INSURANCE_STATUS)+factor(CALLABLE)+factor(STATE_CODE)+factor(TRADE_YEAR),data = muni_city)
 ols[[2]]<-lm(yield_minus_tbill~default_pct+factor(purpose)+factor(issue_type)+factor(offering_type)+
-               log(MUNI_ISSUE_SIZE)+factor(INSURANCE_STATUS)+factor(CALLABLE)+factor(STATE_CODE),data = muni_city)
-stargazer(ols,column.labels=c('Foreclosure','Default'), omit = c("STATE_CODE"),omit.labels = c("State"),
+               log(MUNI_ISSUE_SIZE)+factor(INSURANCE_STATUS)+factor(CALLABLE)+factor(STATE_CODE)+factor(TRADE_YEAR),data = muni_city)
+stargazer(ols,column.labels=c('Foreclosure','Default'), omit = c("STATE_CODE","TRADE_YEAR"),omit.labels = c("State","Trade Year"),
           type = "html",no.space=TRUE)
 
 ```
