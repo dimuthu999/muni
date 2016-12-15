@@ -1,0 +1,149 @@
+---
+title: "House Price, Property Taxes and Municipal Bond Yields"
+date: "December 15, 2016"
+output: 
+  html_document: 
+    css: bodycss.css
+    fig_height: 6
+    fig_width: 12
+    toc: yes
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+
+rm(list=ls())
+library(plyr)
+library(stargazer)
+library(ggplot2)
+library(zoo)
+library(DataCombine)
+library(stringr)
+library(sandwich)
+file_path = "E:/Muni/"
+setwd(file_path)
+output.type = "text"
+```
+
+
+### Property Tax
+Property taxes account for around three-fourths of local government tax revenue and a quarter of total local government revenue (Lutz 2008). Fluctuations in property tax revenue influence local government budgeting decisions.
+
+[Data on property tax
+ % property tax/total revenue
+ % expenses/total revenue]
+
+### House Prices and Property Tax Revenue
+
+The connection between property tax revenues and real estate values likely influences the ability of the local governments to balance their budgets. (Declining house prices impact the property tax revenue negatively (Lutz 2008)). 
+
+>Property Tax Revenue = Tax Rate * Assesment
+
+Changes in the market value of housing does not necessarily translate into a immidiate change in assessed value. Property tax is assessed in a backward looking manner, as the current year’s taxes are based on the assessed value of property in the previous year. Some states have restrictions on frequency of assesment or assessment growth limits. (Alm,Buschman and Sjoquist (2014)). 
+
+The local governments can also change its property tax rate (milage rate) to compensate for the loss of tax revenue due to changes in the assesment values.
+
+Past research has only looked at the changes in the total property tax revenue in response to changes in the house prices. (Bloom and Ladd 1982; Cornia and Walter 2006; Dye, McMillen and Merriman 2006; Ladd 1991 and Lutz 2008). We do not know what drives the changes in the property tax revenue. It is possible that changes in the assesment value drives the property tax revenue when the house prices are increasing and changes to tax rate is more important when the house prices are decreasing particularly when the property tax is a significant fraction of the total revenue.
+
+With the data we have (house level property tax and assesment values from zillow), we can understand effects of house price on the tax rate and assesment seperately.
+
+>$$ taxrate_t = \beta_0 + \beta_1 hpireturn_{t-1} + \beta_2 hpireturn_{t-2} + \beta_3 hpireturn_{t-3} + \beta_4 X $$<br/>>$$ assesment_t = \beta_0 + \beta_1 hpireturn_{t-1} + \beta_2 hpireturn_{t-2} + \beta_3 hpireturn_{t-3} + \beta_4 X $$
+
+Control Variables: Unemployment, Income - Expenditure, Defaults, Foreclosures
+
+<u>Endogeneity Concern:</u> However an unobserved shock which alters both house values and public goods demand would likely generate a change in property tax revenue relatively quickly particularly when the house price is increasing as a response to a positive economic shock such as new manufacturing plant.
+
+#### Foreclosure Rate and Property Tax Revenue
+Foreclosures decrease market values of the foreclosured houses and also of nearby homes in the community; these decreases in housing prices eventually translated into decreases in assessed value through the assessment process; and decreases in assessed value may lead local governments to change the property tax rate.
+```{r dataprep,echo=FALSE}
+setwd(file_path)
+
+# Source: http://www.fhfa.gov/DataTools/Downloads/Pages/House-Price-Index-Datasets.aspx#mpo -> Three-Digit ZIP Codes (Developmental Index; Not Seasonally Adjusted)   
+hpi <- read.csv("HPI_AT_3zip.csv")
+hpi$zip <- hpi$zip*100
+hpi$quarter <- NULL
+hpi$X.1 <- NULL
+hpi$X.2 <- NULL
+hpi$X <- NULL
+hpi <- ddply(hpi,.(zip,year),summarise,hpi_0=mean(hpi,na.rm = TRUE))
+hpi <- hpi[order(hpi$zip,hpi$year),]
+hpi <- slide(hpi, Var = "hpi_0", GroupVar = "zip",slideBy = -1,NewVar = "hpi_1")
+hpi['return_1yr_0'] <- log(hpi$hpi_0/hpi$hpi_1)
+hpi <- slide(hpi, Var = "return_1yr_0", GroupVar = "zip",slideBy = -1,NewVar = "return_1yr_1")
+hpi <- slide(hpi, Var = "return_1yr_0", GroupVar = "zip",slideBy = -2,NewVar = "return_1yr_2")
+hpi <- slide(hpi, Var = "return_1yr_0", GroupVar = "zip",slideBy = -3,NewVar = "return_1yr_3")
+
+tax_data_file <- "zillow_tax_data_cleaned.csv"
+#   taxdata <- read.csv("zillow_tax_price_12_2016_houselevel.csv",header = FALSE,stringsAsFactors = FALSE)
+#   names(taxdata) <- c("zip","beds","baths","sqft","description_features","link","tax_history","price_history")
+#   taxdata <- taxdata[!duplicated(taxdata$link),]
+#   taxdata['zip5'] <- as.numeric(gsub("[^\\.0-9]", "", taxdata$zip))
+#   taxdata$zip <- (taxdata$zip5 %/% 100)*100
+#   items <- c("Zillow Home ID:")
+#   itemnames <- gsub("[: ]","",items)
+#   for(i in 1:nrow(taxdata))  {
+#     j=1
+#     for(item in items)  {
+#       temp <- as.character(taxdata[i,'description_features'])
+#       temp <- strsplit(temp,"_n_l_")[[1]]
+#       dataitem <- temp[which(substr(temp,1,nchar(item))==item)]
+#       if(length(dataitem)== 0 ) dataitem = NA
+#       taxdata[i,itemnames[j]]<-dataitem
+#       j=j+1
+#     }
+#   }
+#   taxdata$ZillowHomeID <- as.numeric(gsub("[^0-9]", "", taxdata$ZillowHomeID))
+#   taxdata <- taxdata[!duplicated(taxdata$ZillowHomeID),]
+#   taxdata <- taxdata[,c("zip","tax_history","ZillowHomeID")]
+#   write.table(t(c("sep=|\nZillowHomeID","zip","year","tax_amount","tax_value")),file=tax_data_file,append = FALSE,sep = "|",quote = FALSE,col.names = FALSE,row.names = FALSE)
+#   for(i in 1:nrow(taxdata))  {
+#     cat(i," ")
+#     temp <- as.character(taxdata[i,'tax_history'])
+#     if(is.na(temp)) next
+#     temp <- strsplit(temp,"_n_l_")[[1]]
+#     temp <- temp[5:length(temp)]
+#     
+#     for(j in 1:length(temp))  {
+#       temp2 <- str_split_fixed(temp[[j]], " ", 5)
+#       write.table(t(c(taxdata[i,'ZillowHomeID'],taxdata[i,'zip'],temp2[1,1],temp2[1,2],temp2[1,4])),file=tax_data_file,append = TRUE,sep = "|",quote = FALSE,col.names = FALSE,row.names = FALSE)
+#     }
+#   }
+# open and format zillow_tax_data_cleaned.csv in excel before reading
+taxdata <- read.csv(file = "zillow_tax_data_cleaned.csv")
+taxdata$tax_value <- as.numeric(as.character(taxdata$tax_value))
+taxdata$tax_amount <- as.numeric(as.character(taxdata$tax_amount))
+taxdata <- taxdata[!is.na(taxdata$tax_amount) & !is.na(taxdata$tax_value) & taxdata$tax_value>0 & taxdata$tax_amount>0,]
+taxdata['tax_pct_assesment'] <- taxdata$tax_amount/taxdata$tax_value
+
+taxdata <- merge(taxdata,hpi,by=c("zip","year"),all.x = TRUE)
+```
+
+
+```{r taxpctreg}
+
+ols_formula <- list()
+ols_formula[[1]] <- as.formula("tax_pct_assesment~return_1yr_0+ return_1yr_1+return_1yr_2+return_1yr_3+factor(zip)+factor(year)")
+
+
+ols <- list()
+se <- list()
+ols[[1]]<-lm(ols_formula[[1]],data=taxdata)
+se[[1]] <- sqrt(diag(vcovHAC(ols[[1]])))
+
+stargazer(ols, omit = c("zip","year"), omit.labels = c("zip","year"), type=output.type,no.space=TRUE,omit.stat = c("f","ser"),notes = "~Robust SE")
+
+```
+
+
+
+```{r}
+summary(cars)
+```
+
+You can also embed plots, for example:
+
+```{r, echo=FALSE}
+plot(cars)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
