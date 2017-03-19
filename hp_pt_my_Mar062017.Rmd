@@ -1,0 +1,599 @@
+---
+title: "House Prices, Property Taxes and Municipal Bond Yields"
+output:
+  html_document:
+    css: bodycss.css
+    fig_height: 6
+    fig_width: 12
+    number_section: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+linestretch: 2
+# bibliography: C:\Users\dnratnadiwakara\OneDrive\library.bib
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE,echo = FALSE)
+```
+
+```{r init_issuerfinancials}
+rm(list=ls())
+file_path = "C:/Users/dnratnadiwakara/Documents/Muni/"
+setwd(file_path)
+output.type = "text"
+
+library(ggplot2)
+library(ggmap)
+library(plyr)
+library(reshape2)
+library(stringr)
+library(plm)
+library(DataCombine)
+library(zipcode)
+library(stargazer)
+library(data.table)
+library(zoo)
+# issuer_financials2.rds was created by issuer financials.R
+financials_issuer_time <- readRDS(file="issuer_financials2.rds")
+financials_issuer_time['liabilities_assets'] <- financials_issuer_time$BS_TOTAL_LIABILITIES/financials_issuer_time$BS_TOT_ASSET.x
+financials_issuer_time['cash_liabilities'] <- financials_issuer_time$CASH_AND_MARKETABLE_SECURITIES/financials_issuer_time$BS_TOTAL_LIABILITIES
+financials_issuer_time$liabilities_assets <- ifelse(abs(financials_issuer_time$liabilities_assets)>1 | financials_issuer_time$liabilities_assets<0,NA,financials_issuer_time$liabilities_assets)
+financials_issuer_time['exp_revenue'] <- (financials_issuer_time$IS_TOT_OPER_EXP)/financials_issuer_time$IS_TOTAL_GEN_FD_REVENUES
+financials_issuer_time['principal_debt_service_reveue'] <- financials_issuer_time$IS_GEN_FD_PRINCIPAL_DEBT_SERVICE/financials_issuer_time$IS_TOTAL_GEN_FD_REVENUES
+financials_issuer_time <- financials_issuer_time[financials_issuer_time$IS_TOTAL_GEN_FD_REVENUES <= quantile(financials_issuer_time$IS_TOTAL_GEN_FD_REVENUES,0.98,na.rm = TRUE),]
+financials_issuer_time <- financials_issuer_time[financials_issuer_time$year>2005,]
+
+financials_issuer <- ddply(financials_issuer_time,.(BOND_TO_EQY_TICKER),summarise,
+                               total_revenue = median(IS_TOTAL_GEN_FD_REVENUES,na.rm = TRUE),
+                               proptax_totaltax = median(proptax_totaltax,na.rm = TRUE),
+                               proptax_opex = median(proptax_opex,na.rm = TRUE)
+                               )
+
+financials_time <- ddply(financials_issuer_time,.(year),summarise,
+                         total_revenue = median(IS_TOTAL_GEN_FD_REVENUES,na.rm = TRUE),
+                         opex = median(IS_TOT_OPER_EXP),
+                         property_tax = median(IS_PROPERTY_TAX_REVENUES,na.rm = TRUE))
+
+issuer_bb_data <- read.csv("issuer_bb_data.csv",stringsAsFactors = FALSE)
+issuer_bb_data <- issuer_bb_data[issuer_bb_data$INDUSTRY_SUBGROUP=="Municipal-City",]
+issuer_bb_data$CITY_OF_DOMICILE <- tolower(issuer_bb_data$CITY_OF_DOMICILE)
+issuer_bb_data$STATE_CODE <- tolower(issuer_bb_data$STATE_CODE)
+
+
+
+forc_numbers <- read.csv("forc_df.csv",sep = "|",stringsAsFactors = FALSE)
+default_numbers <- read.csv("def1_df.csv",sep="|",stringsAsFactors = FALSE)
+loan_numbers <- read.csv("loan_df.csv",sep="|",stringsAsFactors = FALSE)
+mortgage_data <- merge(loan_numbers,default_numbers,by=c("month","zip"),all.x = TRUE)
+mortgage_data <- merge(mortgage_data,forc_numbers,by=c("month","zip"),all.x = TRUE)
+mortgage_data['forc_pct'] <- mortgage_data$forc_numbers/mortgage_data$loan_numbers
+mortgage_data['default_pct'] <- mortgage_data$def1_numbers/mortgage_data$loan_numbers
+mortgage_data['TRADE_YEAR'] <- as.numeric(format(as.Date(as.character(mortgage_data$month)),"%Y"))
+mortgage_data <- mortgage_data[,c("zip","TRADE_YEAR","forc_pct","default_pct")]
+mortgage_data <- ddply(mortgage_data,.(zip,TRADE_YEAR),summarise,forc_pct  = median(forc_pct,na.rm = TRUE),default_pct = median(default_pct,na.rm = TRUE))
+mortgage_data <- mortgage_data[order(mortgage_data$zip,mortgage_data$TRADE_YEAR),]
+mortgage_data <- slide(mortgage_data, Var = "forc_pct", GroupVar = "zip",slideBy = -1,NewVar = "forc_pct_1")
+mortgage_data <- slide(mortgage_data, Var = "default_pct", GroupVar = "zip",slideBy = -1,NewVar = "default_pct_1")
+mortgage_data <- data.table(mortgage_data)
+setkeyv(mortgage_data,c('zip','TRADE_YEAR'))
+```
+
+```{r init_householdtax}
+tax_data_file <- "zillow_tax_data_cleaned_2.csv"
+  # taxdata <- NULL
+  # files <- c("zillow_tax_price_12_2016_houselevel.csv","zillow_tax_price_otherzips_houselevel_0.1.csv","zillow_tax_price_otherzips_houselevel.csv","zillow_tax_price_otherzips_houselevel_2.csv","zillow_tax_price_otherzips_houselevel_3.csv","zillow_tax_price_otherzips_houselevel_4.csv")
+  # 
+  # for(fn in files)  {
+  #   temp <- read.csv(paste(file_path,fn,sep = ""),header = FALSE,stringsAsFactors = FALSE)
+  #   temp <- temp[,1:8]
+  #   taxdata <- rbind(taxdata,temp)
+  # }
+  # 
+  #   names(taxdata) <- c("zip","beds","baths","sqft","description_features","link","tax_history","price_history")
+  #   taxdata <- taxdata[!duplicated(taxdata$link),]
+  #   taxdata['zip5'] <- as.numeric(gsub("[^\\.0-9]", "", taxdata$zip))
+  #   taxdata$zip <- (taxdata$zip5 %/% 100)*100
+  #   items <- c("Zillow Home ID:")
+  #   itemnames <- gsub("[: ]","",items)
+  #   for(i in 1:nrow(taxdata))  {
+  #     j=1
+  #     for(item in items)  {
+  #       temp <- as.character(taxdata[i,'description_features'])
+  #       temp <- strsplit(temp,"_n_l_")[[1]]
+  #       dataitem <- temp[which(substr(temp,1,nchar(item))==item)]
+  #       if(length(dataitem)== 0 ) dataitem = NA
+  #       taxdata[i,itemnames[j]]<-dataitem
+  #       j=j+1
+  #     }
+  #   }
+  #   taxdata$ZillowHomeID <- as.numeric(gsub("[^0-9]", "", taxdata$ZillowHomeID))
+  #   taxdata <- taxdata[!duplicated(taxdata$ZillowHomeID),]
+  #   taxdata <- taxdata[,c("zip","tax_history","ZillowHomeID","price_history")]
+  #   write.table(t(c("sep=|\nZillowHomeID","zip","year","tax_amount","tax_value","price")),file=paste(file_path,tax_data_file,sep=""),append = FALSE,sep = "|",quote = FALSE,col.names = FALSE,row.names = FALSE)
+  #   for(i in 1:nrow(taxdata))  {
+  #     cat(i," ")
+  #     temp <- as.character(taxdata[i,'price_history'])
+  #     temp <- strsplit(temp,"_n_l_")[[1]]
+  #     temp <- temp[3]
+  #     price <- substr(temp,regexpr('\\$', temp)[1],nchar(temp))
+  # 
+  #     temp <- as.character(taxdata[i,'tax_history'])
+  #     if(is.na(temp)) next
+  #     temp <- strsplit(temp,"_n_l_")[[1]]
+  #     temp <- temp[5:length(temp)]
+  # 
+  #     for(j in 1:length(temp))  {
+  #       temp2 <- str_split_fixed(temp[[j]], " ", 5)
+  #       write.table(t(c(taxdata[i,'ZillowHomeID'],taxdata[i,'zip'],temp2[1,1],temp2[1,2],temp2[1,4],price)),file=paste(file_path,tax_data_file,sep=""),append = TRUE,sep = "|",quote = FALSE,col.names = FALSE,row.names = FALSE)
+  #     }
+  #   }
+# open and format zillow_tax_data_cleaned.csv in excel before reading
+taxdata <- read.csv(file =paste(file_path,tax_data_file,sep=""),stringsAsFactors = FALSE)
+
+
+hpi <- read.csv(paste(file_path,"HPI_AT_3zip.csv",sep=""))
+hpi$zip <- hpi$zip*100
+hpi$quarter <- NULL
+hpi$X.1 <- NULL
+hpi$X.2 <- NULL
+hpi$X <- NULL
+hpi <- ddply(hpi,.(zip,year),summarise,hpi_0=mean(hpi,na.rm = TRUE))
+hpi <- hpi[order(hpi$zip,hpi$year),]
+hpi <- slide(hpi, Var = "hpi_0", GroupVar = "zip",slideBy = -1,NewVar = "hpi_1")
+hpi <- slide(hpi, Var = "hpi_0", GroupVar = "zip",slideBy = -2,NewVar = "hpi_2")
+hpi <- slide(hpi, Var = "hpi_0", GroupVar = "zip",slideBy = -3,NewVar = "hpi_3")
+hpi <- slide(hpi, Var = "hpi_0", GroupVar = "zip",slideBy = -4,NewVar = "hpi_4")
+hpi['return_1yr_1'] <- log(hpi$hpi_1/hpi$hpi_2)
+hpi['return_2yr_1'] <- log(hpi$hpi_1/hpi$hpi_3)/2
+hpi['return_3yr_1'] <- log(hpi$hpi_1/hpi$hpi_4)/3
+
+taxdata <- merge(taxdata,hpi,by=c("zip","year"),all.x = TRUE)
+
+taxdata['tax_pct_assesment'] <- taxdata$tax_amount/taxdata$tax_value
+taxdata <- taxdata[order(taxdata$ZillowHomeID,taxdata$year),]
+taxdata <- slide(taxdata, Var = "tax_pct_assesment", GroupVar = "ZillowHomeID",slideBy = -1,NewVar = "tax_pct_assesment_1")
+taxdata['tax_pct_change'] <- taxdata$tax_pct_assesment - taxdata$tax_pct_assesment_1
+taxdata <- slide(taxdata, Var = "tax_value", GroupVar = "ZillowHomeID",slideBy = -1,NewVar = "tax_value_1")
+taxdata['tax_value_change'] <- log(taxdata$tax_value/taxdata$tax_value_1)
+taxdata <- slide(taxdata, Var = "tax_amount", GroupVar = "ZillowHomeID",slideBy = -1,NewVar = "tax_amount_1")
+taxdata['tax_amount_change'] <- log(taxdata$tax_amount/taxdata$tax_amount_1)
+
+columns_delete <- c("hpi_4","hpi_3","hpi_2")
+
+taxdata <- taxdata[,names(taxdata)[!names(taxdata) %in% columns_delete]]
+```
+
+```{r init_bondtrade}
+zip_link <- financials_issuer_time[,c("BOND_TO_EQY_TICKER","zip")]
+zip_link <- zip_link[!duplicated(zip_link),]
+zip_link <- data.table(zip_link)
+setkeyv(zip_link,c('BOND_TO_EQY_TICKER'))
+
+muni_city <- readRDS(paste(file_path,"city_muni_data_merged_3.rds",sep=""))
+muni_city['year'] <- as.numeric(muni_city$TRADE_YEAR)
+muni_city['TRADE_YEAR'] <- as.numeric(muni_city$TRADE_YEAR)
+names(muni_city)[1] = "BOND_TO_EQY_TICKER"
+keep_names <- c("BOND_TO_EQY_TICKER","year","DATED_DATE","MATURITY_DATE","YIELD","STATE_CODE","MUNI_STATE_TAX","MUNI_FED_TAX","PAR_AMT","purpose","issue_type","offering_type","yield_minus_tbill","TRADE_DATE","CUSIP.x","INSURANCE_STATUS","CALLABLE","TRADE_YEAR")
+muni_city <- muni_city[,names(muni_city) %in% keep_names]
+muni_city['trade_month'] <- as.yearmon(as.Date(muni_city$TRADE_DATE))
+
+muni_city <- data.table(muni_city)
+setkeyv(muni_city,c('BOND_TO_EQY_TICKER'))
+
+muni_city <- merge(muni_city,zip_link,by="BOND_TO_EQY_TICKER")
+
+setkeyv(muni_city,c('zip','TRADE_YEAR'))
+muni_city <- merge(muni_city,mortgage_data,by = c('zip','TRADE_YEAR'),all.x = TRUE)
+muni_city <- as.data.frame(muni_city)
+gc()
+```
+
+# Summary
+
+* Property tax is a large fraction of the total revenue
+* House prices have a significant impact on property assesments, property tax rate and property tax amounts
+* Mean foreclosure rate and house price index significantly impact municipal bond yields
+* Effects of foreclosure rate and house price index are stronger when share of property tax in revenue is larger
+
+
+# Data
+
+3 Datasets were constructed. 
+
+1. Issuer data contains financial information on each issuer
+2. Issue data has information about each issue and their trading data 
+3. Household level data has information about annual property tax amounts and assesment values for individual houses.
+
+## Issuer Data
+
+* Issure financial data was obtained from bloomberg for the selected 5275 issuers who are categorized as "Municipal-City" by Bloomberg
+* Available data include Total Revenue, Total property tax revenue, Total Assets and Leverage.
+
+## Bond Data
+
+* This dataset contians origination and trading information for bonds issued by the above 5275 issuers.
+* This data contains information such as issued date, issue type (GO vs Revenue), issue purpose, offering type, wheather taxable by state, wheather subject to federal tax, whether bond is callable, maturity date, trade date and yield
+* The code used to generate this dataset is available at https://github.com/dimuthu999/muni/blob/master/data%20merge.R
+
+## Household Level Data
+
+* Zillow provides tax assesment and property taxes paid for each house advertised in zillow
+* Example: http://www.zillow.com/homedetails/16922-Cross-Springs-Dr-Houston-TX-77095/28528963_zpid/
+* These data were scraped from zillow. 10 houses in each zipcode from 796 zipcodes across the country.
+
+
+<a href="#top">Back to top</a>
+
+
+# Descriptive Statistics
+
+## Issuer Financials
+
+* Mean (Median) revenue is 21 (8) million USD
+* 50% of the revenue is from property taxes
+* Liabilities is 30% of total assets
+
+```{r issuerfin_desc}
+print(paste('Number of Municipalties : ',length(unique(financials_issuer_time$BOND_TO_EQY_TICKER))))
+print(paste('Number of States : ',length(unique(financials_issuer_time$State))))
+
+data("zipcode")
+zipcode['zip'] <- floor(as.numeric(zipcode$zip)/100)*100
+zipcode <- zipcode[,c("zip","latitude","longitude")]
+zipcode <- zipcode[!duplicated(zipcode$zip),]
+zip_issuer <- ddply(financials_issuer_time,.(zip),summarise,len=length(zip))
+zip_issuer <- merge(zip_issuer,zipcode,by="zip")
+zip_issuer$len <- 1
+
+# map<-get_map(location='united states', zoom=4, maptype = "terrain", source='google',color='bw',crop = TRUE)
+# ggmap(map) + geom_point(aes(x=longitude, y=latitude, show_guide = FALSE, colour=len),data=zip_issuer, alpha=.8, na.rm = T)
+
+
+print('Total revenues of the general fund ($ millions)')
+summary(financials_issuer_time$IS_TOTAL_GEN_FD_REVENUES)
+
+
+
+ggplot(data=financials_issuer_time, aes(financials_issuer_time$proptax_totaltax)) + geom_histogram(breaks=seq(0,1, by=0.1),col="black")+ylab("Number of Municipalty Years")+xlab("Property Tax/TotalRevenue") + theme_bw(base_size = 15)
+
+ggplot(data=financials_issuer_time, aes(financials_issuer_time$proptax_opex)) + geom_histogram(breaks=seq(0,1, by=0.1),col="black")+ylab("Number of Municipalty Years")+xlab("Property Tax/Operating Expenses") + theme_bw(base_size = 15)
+
+
+financials_time <- melt(financials_time, id="year")
+
+lbls <- c("Total Revenue","Total Expenditure","Property Tax")
+ggplot(data=financials_time,aes(x=year, y=value, colour=variable)) +  geom_line(aes(linetype=variable), size=2)+ggtitle('Median Values')+ scale_color_manual(name="",values=c("gray20", "gray40","gray60"),labels = lbls)+ xlab("Time") + ylab("$ millions")+scale_linetype_manual(name="",labels = lbls,values=c(1,2,3))+scale_shape_discrete(name="", labels = lbls)+ theme_bw(base_size = 13)+theme(legend.position="bottom",legend.direction="horizontal",legend.title=element_blank(),
+        axis.ticks.y=element_blank(),legend.key.width=unit(5,"line"),legend.key = element_blank())
+
+print("return_3yr_1 = 3 year return on house price index lagged by 1 year")
+
+stargazer(financials_issuer_time[, c("return_3yr_1","return_1yr_1","proptax_totaltax","proptax_opex","exp_revenue","cash_liabilities","liabilities_assets","principal_debt_service_reveue")], type = "text", summary.stat = c("mean", "sd", "p25", "median", "p75", "N"))
+
+# map<-get_map(location='united states', zoom=4, maptype = "terrain", source='google',color='bw',crop = TRUE)
+# 
+# ggmap(map) + geom_point(aes(x=longitude, y=latitude, show_guide = FALSE, colour=ind),data=zip_issuer, alpha=.8, na.rm = T)+guides(colour=FALSE)+scale_color_gradient(low="gray24", high="gray24")+ ggtitle("Issuer Level Data Availability")  
+```
+
+<a href="#top">Back to top</a>
+
+## Bond Level Trading Data
+
+```{r bond_desc}
+stargazer(muni_city[, c("YIELD","yield_minus_tbill","forc_pct")], type = "text", summary.stat = c("mean", "sd", "p25", "median", "p75", "N"))
+
+
+issues <- muni_city[!duplicated(muni_city$CUSIP.x),]
+
+print("Insurance Status")
+table(issues$INSURANCE_STATUS)
+print("Callable")
+table(issues$CALLABLE)
+print("Issue Type")
+table(issues$issue_type)
+
+# stargazer(issues[, c("MUNI_ISSUE_SIZE","PAR_AMT")], type = "text", summary.stat = c("mean", "sd", "p25", "median", "p75", "N"),digits = 0,title = "Issue Data: Descriptive Stats")
+
+rm(issues)
+```
+
+<a href="#top">Back to top</a>
+
+## House Level Property Tax Data
+
+* Tax rate is negatively related to 1 year lagged 3-digit zip code level house price index
+* Assesed Value is positively related to 1 year lagged 3-digit zip code level house price index
+* Tax amount is positively related to 1 year lagged 3-digit zip code level house price index
+
+
+```{r houseproptax_desc}
+
+print(paste('Number of Houses : ',length(unique(taxdata$ZillowHomeID))))
+
+sum_table <- ddply(taxdata,.(year),summarise,hpi = mean(hpi_1,na.rm = TRUE),tax_pct=median(tax_pct_assesment,na.rm = TRUE),assesment = mean(tax_value,na.rm = TRUE),tax_amount=median(tax_amount,na.rm = TRUE))
+sum_table <- sum_table[sum_table$year < 2016 & sum_table$year>2004,]
+
+ggplot(sum_table, aes(x=hpi, y=tax_pct)) + geom_point(shape=1)+geom_text(aes(label=year),hjust=0, vjust=0) +  geom_smooth(method=lm) + theme_bw()+xlab(expression(hpi[t-1])) + ylab("Tax Rate")
+
+ggplot(sum_table, aes(x=hpi, y=assesment)) + geom_point(shape=1)+geom_text(aes(label=year),hjust=0, vjust=0) +  geom_smooth(method=lm) + theme_bw()+xlab(expression(hpi[t-1])) + ylab("Assessed Value")
+
+ggplot(sum_table, aes(x=hpi, y=tax_amount)) + geom_point(shape=1)+geom_text(aes(label=year),hjust=0, vjust=0) +  geom_smooth(method=lm) + theme_bw()+xlab(expression(hpi[t-1])) + ylab("Tax Amount")
+
+ols <- list()
+ols[[1]]<-lm(tax_pct~hpi,data=sum_table)
+ols[[2]]<-lm(assesment~hpi,data=sum_table)
+ols[[3]]<-lm(tax_amount~hpi,data=sum_table)
+stargazer(ols, type=output.type,no.space=TRUE,title = "Regressions on lagged HPI")
+
+
+cor_table <-cor(taxdata[,c("tax_pct_assesment","tax_value","tax_amount","tax_pct_change","return_1yr_1","return_2yr_1","return_3yr_1")],use = "complete.obs")
+stargazer(cor_table,type=output.type,summary = FALSE,digits=3,title = "Correlations")
+
+```
+
+<a href="#top">Back to top</a>
+
+# Results
+
+> All of the following regressions are fixed effect models. Depending on the specification bond, issuer or house fixed effects were used.
+
+* main variable of interest : "return-3yr-1"" is 1 year lagged 3 year return on the house price index of the zip code
+
+## Municipalty Level: Property tax on Lagged House Price Returns
+
+* Total property tax collected is positively related to HPI. Property tax collected decreases when HPI decreases.
+* Other tax revenues are also negatively affected by HPI
+* Property tax/operating expenses decreases when HPI decreases
+
+
+```{r}
+column.labels = c("All HPI","Negative HPI","Positive HPI")
+lines = c("Fixed Effects","Issuer","Issuer","Issuer")
+omit = c("year")
+
+financials_issuer_time$proptax_change <- log(financials_issuer_time$IS_PROPERTY_TAX_REVENUES/financials_issuer_time$IS_PROPERTY_TAX_REVENUES_1)
+financials_issuer_time <- financials_issuer_time[order(financials_issuer_time$BOND_TO_EQY_TICKER,financials_issuer_time$year),]
+financials_issuer_time <- slide(financials_issuer_time, Var = "proptax_opex", GroupVar = "BOND_TO_EQY_TICKER",slideBy = -1,NewVar = "proptax_opex_1")
+
+financials_issuer_time['proptax_opex_change'] <- log(financials_issuer_time$proptax_opex/financials_issuer_time$proptax_opex_1)
+
+financials_issuer_time <- slide(financials_issuer_time, Var = "other_tax_revenues", GroupVar = "BOND_TO_EQY_TICKER",slideBy = -1,NewVar = "other_tax_revenues_1")
+
+financials_issuer_time['other_revenue_change'] <- log(financials_issuer_time$other_tax_revenues/financials_issuer_time$other_tax_revenues_1)
+financials_issuer_time <- financials_issuer_time[is.finite(financials_issuer_time$proptax_change),]
+financials_issuer_time <- financials_issuer_time[!duplicated(financials_issuer_time[,c("BOND_TO_EQY_TICKER","year")]),]
+plm_tax_data <- pdata.frame(financials_issuer_time,index=c("BOND_TO_EQY_TICKER","year"))
+
+ols_formula <- list()
+ols_formula[[1]] <- as.formula("proptax_change~return_3yr_1+factor(year)")
+
+ols <- list()
+  marginal_effects <- c("mfx: impact of 1sd as pct of mean")
+ols[[1]]<-plm(ols_formula[[1]], data = plm_tax_data,model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[1]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$proptax_change,na.rm = TRUE),2))
+ols[[2]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1<0,],model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[2]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$proptax_change,na.rm = TRUE),2))
+ols[[3]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1>0,],model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[3]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$proptax_change,na.rm = TRUE),2))
+  
+stargazer(ols,type=output.type,column.labels = column.labels,title="Change in Property Tax Revenue",no.space = TRUE,omit.stat = c("f","rsq","ser"),add.lines = list(lines,marginal_effects),omit = omit)
+
+
+ols_formula <- list()
+ols_formula[[1]] <- as.formula("other_revenue_change~return_3yr_1")
+
+ols <- list()
+  marginal_effects <- c("mfx: impact of 1sd as pct of mean")
+ols[[1]]<-plm(ols_formula[[1]], data = plm_tax_data,model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[1]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$total_revenue_change,na.rm = TRUE),2))
+ols[[2]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1<0,],model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[2]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$total_revenue_change,na.rm = TRUE),2))
+ols[[3]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1>0,],model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[3]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$total_revenue_change,na.rm = TRUE),2))
+  
+stargazer(ols,type=output.type,column.labels = column.labels,title="Change in Other Tax Revenues",no.space = TRUE,omit.stat = c("f","rsq","ser"),add.lines = list(lines,marginal_effects),omit = omit)
+
+
+
+ols_formula <- list()
+ols_formula[[1]] <- as.formula("proptaxpct_change~return_3yr_1")
+
+ols <- list()
+  marginal_effects <- c("mfx: impact of 1sd as pct of mean")
+ols[[1]]<-plm(ols_formula[[1]], data = plm_tax_data,model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[1]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$proptaxpct_change,na.rm = TRUE),2))
+ols[[2]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1<0,],model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[2]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$proptaxpct_change,na.rm = TRUE),2))
+ols[[3]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1>0,],model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[3]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$proptaxpct_change,na.rm = TRUE),2))
+  
+stargazer(ols,type=output.type,column.labels = column.labels,title="Change in Property Tax/Revenue",no.space = TRUE,omit.stat = c("f","rsq","ser"),add.lines = list(lines,marginal_effects),omit = omit)
+
+
+ols_formula <- list()
+ols_formula[[1]] <- as.formula("proptax_opex_change~return_3yr_1")
+
+ols <- list()
+  marginal_effects <- c("mfx: impact of 1sd as pct of mean")
+ols[[1]]<-plm(ols_formula[[1]], data = plm_tax_data,model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[1]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$proptax_opex_change,na.rm = TRUE),2))
+ols[[2]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1<0,],model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[2]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$proptax_opex_change,na.rm = TRUE),2))
+ols[[3]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1>0,],model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[3]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$proptax_opex_change,na.rm = TRUE),2))
+  
+stargazer(ols,type=output.type,column.labels = column.labels,title="Change in Property Tax/OPEX",no.space = TRUE,omit.stat = c("f","rsq","ser"),add.lines = list(lines,marginal_effects),omit = omit)
+
+```
+
+
+<a href="#top">Back to top</a>
+
+
+## House Level: Property tax on Lagged House Price Returns
+
+* Property tax assesment is positively related to changes in HPI
+* Property tax rate is negatively related to changes in HPI
+* However, total property tax collected is positively related to changes in HPI
+* This implies that when house prices are going down, the revenue of municipalties are negatively affected.
+
+```{r}
+plm_tax_data <- pdata.frame(taxdata,index=c("ZillowHomeID","year"))
+column.labels = c("Chg. in Rate","Chg. in Asmt","Chg. in Amt")
+lines = c("Fixed Effects","House","House","House")
+omit = c("year")
+
+ols_formula <- list()
+ols_formula[[1]] <- as.formula("tax_pct_change~return_3yr_1")
+ols_formula[[2]] <- as.formula("tax_value_change~return_3yr_1")
+ols_formula[[3]] <- as.formula("tax_amount_change~return_3yr_1")
+
+
+ols <- list()
+  marginal_effects <- c("mfx: impact of 1sd as pct of mean")
+ols[[1]]<-plm(ols_formula[[1]], data = plm_tax_data,model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[1]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$tax_pct_change,na.rm = TRUE),2))
+ols[[2]]<-plm(ols_formula[[2]], data = plm_tax_data,model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[2]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$tax_value_change,na.rm = TRUE),2))
+ols[[3]]<-plm(ols_formula[[3]], data = plm_tax_data,model="within")
+  marginal_effects <- c(marginal_effects,round(summary(ols[[3]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)/mean(plm_tax_data$tax_amount_change,na.rm = TRUE),2))
+
+stargazer(ols,type=output.type,column.labels = column.labels,title="All HPI Returns",no.space = TRUE,omit.stat = c("f","rsq","ser"),add.lines = list(lines,marginal_effects),omit = omit)
+
+
+ols <- list()
+  marginal_effects <- c("mfx: impact of 1sd as pct of mean")
+ols[[1]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1<0,])
+  marginal_effects <- c(marginal_effects,round(summary(ols[[1]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$tax_pct_change,na.rm = TRUE),2))
+ols[[2]]<-plm(ols_formula[[2]], data = plm_tax_data[plm_tax_data$return_3yr_1<0,])
+  marginal_effects <- c(marginal_effects,round(summary(ols[[2]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$tax_value_change,na.rm = TRUE),2))
+ols[[3]]<-plm(ols_formula[[3]], data = plm_tax_data[plm_tax_data$return_3yr_1<0,])
+  marginal_effects <- c(marginal_effects,round(summary(ols[[3]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)/mean(plm_tax_data$tax_amount_change,na.rm = TRUE),2))
+  
+stargazer(ols,type=output.type,column.labels = column.labels,title="Only Negative HPI Returns",no.space = TRUE,omit.stat = c("f","rsq","ser"),add.lines = list(lines,marginal_effects),omit = omit)
+
+
+ols <- list()
+  marginal_effects <- c("mfx: impact of 1sd as pct of mean")
+ols[[1]]<-plm(ols_formula[[1]], data = plm_tax_data[plm_tax_data$return_3yr_1>0,])
+  marginal_effects <- c(marginal_effects,round(summary(ols[[1]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$tax_pct_change,na.rm = TRUE),2))
+ols[[2]]<-plm(ols_formula[[2]], data = plm_tax_data[plm_tax_data$return_3yr_1>0,])
+  marginal_effects <- c(marginal_effects,round(summary(ols[[2]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)*100/mean(plm_tax_data$tax_value_change,na.rm = TRUE),2))
+ols[[3]]<-plm(ols_formula[[3]], data = plm_tax_data[plm_tax_data$return_3yr_1>0,])
+  marginal_effects <- c(marginal_effects,round(summary(ols[[3]])$coefficients[1]*sd(plm_tax_data$return_3yr_1,na.rm = TRUE)/mean(plm_tax_data$tax_amount_change,na.rm = TRUE),2))
+
+stargazer(ols,type=output.type,column.labels = column.labels,title="Only Positive HPI Returns",no.space = TRUE,omit.stat = c("f","rsq","ser"),add.lines = list(lines,marginal_effects),omit = omit)
+```
+
+<a href="#top">Back to top</a>
+
+## Yield Regression
+
+* Dependent Variable: Yield - 3 month t-bill rate
+* forc_pct: monthly zipcode level mean foreclosure rate 
+* high-proptax-totaltax : Property tax/Total Tax greater than median
+* high-liabilities-assets : Liabilities/Assets greater than median
+* high-exp-revenue: Expenditure/Revenue greater than median
+* high-principal-debt-service-revenue: Principal debt servicer/Revenue greater than median
+
+```{r yieldreg_fe_manual}
+muni_city['state_year'] <- paste(muni_city$STATE_CODE,muni_city$year)
+# muni_city['state_year'] <- paste(muni_city$STATE_CODE,muni_city$year)
+muni_city['general_obligation'] <- ifelse(muni_city$issue_type=="other",0,1)
+muni_city <- muni_city[muni_city$general_obligation==1,]
+
+
+muni_city <- data.table(muni_city)
+setkeyv(muni_city,c('year','BOND_TO_EQY_TICKER'))
+
+unique_trade_data <- muni_city[, lapply(.SD, median, na.rm=TRUE), by=c("CUSIP.x","TRADE_DATE"), .SDcols=c("yield_minus_tbill") ] 
+unique_trade_data <- unique_trade_data[!duplicated(unique_trade_data[,c("CUSIP.x","TRADE_DATE")]),]
+
+keep_names <- c("BOND_TO_EQY_TICKER","year","proptax_opex","proptax_totaltax","proptax_change","othertax_change","liabilities_assets","cash_liabilities","exp_revenue","principal_debt_service_reveue","return_1yr_1","return_2yr_1","return_3yr_1","hpi_1")
+temp <- financials_issuer_time[,names(financials_issuer_time) %in% keep_names]
+temp['high_proptax_totaltax'] <- ifelse(temp$proptax_totaltax>quantile(temp$proptax_totaltax,0.75,na.rm = TRUE),1,0)
+temp['high_liabilities_assets'] <- ifelse(temp$liabilities_assets>median(temp$liabilities_assets,na.rm = TRUE),1,0)
+temp['high_exp_revenue'] <- ifelse(temp$exp_revenue>median(temp$exp_revenue,na.rm = TRUE),1,0)
+temp['high_principal_debt_service_reveue'] <- ifelse(temp$principal_debt_service_reveue>median(temp$principal_debt_service_reveue,na.rm = TRUE),1,0)
+
+temp <- data.table(temp)
+setkeyv(temp,c('year','BOND_TO_EQY_TICKER'))
+
+muni_city <- merge(muni_city,temp,by=c('year','BOND_TO_EQY_TICKER'),all.x = TRUE)
+muni_city <- as.data.frame(muni_city)
+muni_city <- muni_city[!is.na(muni_city$proptax_totaltax),]
+
+
+# instead of removing duplicates calculate the median for each day
+muni_city <- muni_city[!duplicated(muni_city[,c("CUSIP.x","TRADE_DATE")]),]
+gc()
+
+muni_city$yield_minus_tbill <- NULL
+muni_city <- data.table(muni_city)
+setkeyv(muni_city,c("CUSIP.x","TRADE_DATE"))  
+muni_city <- merge(muni_city,unique_trade_data,by=c("CUSIP.x","TRADE_DATE"))
+muni_city <- muni_city[!duplicated(muni_city[,c("CUSIP.x","TRADE_DATE")]),]
+
+fixed_effects_state_year <- muni_city[, lapply(.SD, mean, na.rm=TRUE), by=c("STATE_CODE","year"), .SDcols=c("yield_minus_tbill") ] 
+names(fixed_effects_state_year) <- c("STATE_CODE","year","state_year_fe")
+fixed_effects_bond <- muni_city[, lapply(.SD, mean, na.rm=TRUE), by=c("CUSIP.x"), .SDcols=c("yield_minus_tbill") ]
+names(fixed_effects_bond) <- c("CUSIP.x","bond_fe")
+fixed_effects_return_3yr_1_state_year <- muni_city[, lapply(.SD, mean, na.rm=TRUE), by=c("STATE_CODE","year"), .SDcols=c("return_3yr_1") ] 
+names(fixed_effects_return_3yr_1_state_year) <- c("STATE_CODE","year","hpi_state_year_fe")
+fixed_effects_return_3yr_1 <- muni_city[, lapply(.SD, mean, na.rm=TRUE), by=c("CUSIP.x"), .SDcols=c("return_3yr_1") ]
+names(fixed_effects_return_3yr_1) <- c("CUSIP.x","hpi_bond_fe")
+
+muni_city <- merge(muni_city,fixed_effects_state_year,by=c("STATE_CODE","year"))
+muni_city <- merge(muni_city,fixed_effects_bond,by=c("CUSIP.x"))
+
+muni_city <- merge(muni_city,fixed_effects_return_3yr_1_state_year,by=c("STATE_CODE","year"))
+muni_city <- merge(muni_city,fixed_effects_return_3yr_1,by=c("CUSIP.x"))
+
+muni_city <- as.data.frame(muni_city)
+# muni_city['yield_premium_fe_adj'] <- muni_city$yield_minus_tbill- muni_city$state_year_fe - muni_city$bond_fe
+# muni_city['hpi_return_fe_adj'] <- muni_city$return_3yr_1- muni_city$hpi_state_year_fe - muni_city$hpi_bond_fe
+
+lines <- c("Fixed Effects","Bond, Year ","Bond, Year","Bond, Year","Bond, Year")
+omit <- c("year")
+
+plm_muni_data <- pdata.frame(muni_city,index=c("CUSIP.x","TRADE_DATE"))
+gc()
+
+ols_formula <- list()
+ols_formula[[1]] <- as.formula("yield_minus_tbill~forc_pct+factor(year)")
+ols_formula[[2]] <- as.formula("yield_minus_tbill~forc_pct*high_proptax_totaltax+high_liabilities_assets+high_principal_debt_service_reveue+factor(year)")
+ols_formula[[3]] <- as.formula("yield_minus_tbill~forc_pct_1+factor(year)")
+ols_formula[[4]] <- as.formula("yield_minus_tbill~forc_pct_1*high_proptax_totaltax+high_liabilities_assets+high_principal_debt_service_reveue+factor(year)")
+
+
+
+ols <- list()
+ols[[1]]<-plm(ols_formula[[1]], data = plm_muni_data,model="within")
+ols[[2]]<-plm(ols_formula[[2]], data = plm_muni_data,model="within")
+ols[[3]]<-plm(ols_formula[[3]], data = plm_muni_data,model="within")
+ols[[4]]<-plm(ols_formula[[4]], data = plm_muni_data,model="within")
+
+stargazer(ols,type=output.type,no.space = TRUE,omit.stat = c("f","rsq","ser"),add.lines = list(lines),omit = omit)
+
+
+
+ols_formula <- list()
+ols_formula[[1]] <- as.formula("yield_minus_tbill~hpi_1+factor(year)")
+ols_formula[[2]] <- as.formula("yield_minus_tbill~hpi_1*high_proptax_totaltax+high_liabilities_assets+high_principal_debt_service_reveue+factor(year)")
+
+ols <- list()
+ols[[1]]<-plm(ols_formula[[1]], data = plm_muni_data,model="within")
+ols[[2]]<-plm(ols_formula[[2]], data = plm_muni_data,model="within")
+
+
+stargazer(ols,type=output.type,no.space = TRUE,omit.stat = c("f","rsq","ser"),add.lines = list(lines),omit = omit)
+
+```
+
+<a href="#top">Back to top</a>
+
+
+
+
